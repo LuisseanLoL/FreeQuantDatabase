@@ -127,6 +127,25 @@ class AkshareFetcher:
         if isinstance(code, str) and (code.startswith("sh.") or code.startswith("sz.")):
             return code.split(".")[1]
         return str(code)
+    
+    # =================================================
+    # 4. 📊 全市场估值数据 (Market Metrics)
+    # =================================================
+    def fetch_market_pe(self) -> pd.DataFrame:
+        """获取A股主板市盈率 (乐咕乐股) - 返回历史序列"""
+        try:
+            return ak.stock_market_pe_lg(symbol="上证")
+        except Exception as e:
+            print(f"❌ Error fetching market PE: {e}")
+            return pd.DataFrame()
+
+    def fetch_market_pb(self) -> pd.DataFrame:
+        """获取A股等权重/中位数市净率 - 返回历史序列"""
+        try:
+            return ak.stock_a_all_pb()
+        except Exception as e:
+            print(f"❌ Error fetching market PB: {e}")
+            return pd.DataFrame()
 
 # --- 测试逻辑 ---
 if __name__ == "__main__":
