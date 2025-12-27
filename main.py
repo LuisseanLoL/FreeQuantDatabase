@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-AlphaFactorLab 数据更新主程序 (细粒度控制版)
+AlphaFactorLab 数据更新主程序 (高度解耦版)
 功能: 调度各个 Fetcher，清洗数据，并存储为 Hive Partition Parquet
 用法示例:
-    python main.py --mode update --task alt_industry_pe  <-- 仅更新行业市盈率
-    python main.py --mode update --task alt_news         <-- 仅更新新闻
-    python main.py --mode update --task stock            <-- 更新股票
+    python main.py --mode update --task concept     <-- 仅更新概念板块
+    python main.py --mode update --task index       <-- 仅更新大盘指数
+    python main.py --mode update --task stock       <-- 更新个股行情
 """
 
 import argparse
@@ -41,7 +41,26 @@ def get_date_range(mode: str) -> Tuple[str, str]:
     return start_date, end_date
 
 # ==========================================
-# 1. 📈 股票与指数 (Baostock)
+# 1. 📈 指数 (Index) - [独立拆分]
+# ==========================================
+def run_index_update(mode: str):
+    start_date, end_date = get_date_range(mode)
+    logger.info(f"🚀 Starting INDEX update ({mode}): {start_date} -> {end_date}")
+    
+    storage = ParquetStorage(PROCESSED_DIR)
+    cleaner = DataCleaner()
+    
+    with BaostockFetcher() as bs:
+        logger.info(f"Updating {len(INDEX_POOL)} Indexes...")
+        for code in INDEX_POOL:
+            # 获取指数日线 (不复权)
+            df = bs.fetch_index_kline(code, start_date, end_date)
+            if not df.empty:
+                df = cleaner.clean_daily_market_data(df)
+                storage.save_partitioned(df, "index_price_daily", key_col='code')
+
+# ==========================================
+# 2. 📈 个股 (Stock)
 # ==========================================
 def run_stock_update(mode: str):
     start_date, end_date = get_date_range(mode)
@@ -51,21 +70,14 @@ def run_stock_update(mode: str):
     cleaner = DataCleaner()
     
     with BaostockFetcher() as bs:
-        # 1.1 指数
-        logger.info("Updating Indexes...")
-        for code in INDEX_POOL:
-            df = bs.fetch_index_kline(code, start_date, end_date)
-            if not df.empty:
-                df = cleaner.clean_daily_market_data(df)
-                storage.save_partitioned(df, "index_price_daily", key_col='code')
-        
-        # 1.2 个股
         raw_codes = bs.fetch_all_stock_codes()
+        # 严格过滤，只保留个股
         stock_codes = [c for c in raw_codes if not (c.startswith("sh.000") or c.startswith("sz.399"))]
         logger.info(f"Found {len(stock_codes)} stocks.")
         
         for code in tqdm(stock_codes, desc="Stocks"):
             try:
+                # adjust='1' 后复权
                 df = bs.fetch_daily_kline(code, start_date, end_date, adjust='1')
                 if not df.empty:
                     df = cleaner.clean_daily_market_data(df)
@@ -74,7 +86,7 @@ def run_stock_update(mode: str):
                 logger.error(f"Failed stock {code}: {e}")
 
 # ==========================================
-# 2. 📊 ETF (Mootdx)
+# 3. 📊 ETF (Mootdx)
 # ==========================================
 def run_etf_update(mode: str):
     start_date, end_date = get_date_range(mode)
@@ -94,15 +106,16 @@ def run_etf_update(mode: str):
                 logger.error(f"Failed ETF {name}: {e}")
 
 # ==========================================
-# 3. 💰 财务与概念 (Akshare)
+# 4. 💰 财务报表 (Finance)
 # ==========================================
 def run_finance_update(mode: str):
-    logger.info(f"🚀 Starting FINANCE & CONCEPT update")
+    """仅更新财务报表，不再包含概念数据"""
+    logger.info(f"🚀 Starting FINANCIAL REPORT update")
     storage = ParquetStorage(PROCESSED_DIR)
     cleaner = DataCleaner()
     ak_fetcher = AkshareFetcher()
     
-    # 3.1 财务
+    # 借助 Baostock 获取最新的股票列表
     with BaostockFetcher() as bs:
         raw_codes = bs.fetch_all_stock_codes()
         stock_codes = [c for c in raw_codes if not (c.startswith("sh.000") or c.startswith("sz.399"))]
@@ -116,30 +129,46 @@ def run_finance_update(mode: str):
                 storage.save_partitioned(df, "stock_financial", partition_col="report_date", key_col='code')
         except: pass
 
-    # 3.2 概念
+# ==========================================
+# 5. 💡 概念板块 (Concept) - [独立拆分]
+# ==========================================
+def run_concept_update(mode: str):
+    start_date, end_date = get_date_range(mode)
+    logger.info(f"🚀 Starting CONCEPT update ({mode}): {start_date} -> {end_date}")
+    
+    storage = ParquetStorage(PROCESSED_DIR)
+    cleaner = DataCleaner()
+    ak_fetcher = AkshareFetcher()
+    
     df_concepts = ak_fetcher.fetch_concept_boards()
-    if not df_concepts.empty:
-        start_date, end_date = get_date_range(mode)
-        start_str = start_date.replace("-", "")
-        end_str = end_date.replace("-", "")
-        
-        for _, row in tqdm(df_concepts.iterrows(), total=len(df_concepts), desc="Concept Daily"):
-            name = row['name']
-            try:
-                df_daily = ak_fetcher.fetch_concept_daily(name, start_str, end_str)
-                if not df_daily.empty:
-                    df_daily['concept_name'] = name
-                    df_daily = cleaner.clean_daily_market_data(df_daily)
-                    storage.save_partitioned(df_daily, "concept_price_daily", key_col='concept_name')
-                time.sleep(0.5) 
-            except: pass
+    if df_concepts.empty:
+        logger.warning("No concept boards found.")
+        return
+
+    # Akshare 概念接口通常需要 YYYYMMDD
+    start_str = start_date.replace("-", "")
+    end_str = end_date.replace("-", "")
+    
+    logger.info(f"Updating {len(df_concepts)} Concept Boards...")
+    for _, row in tqdm(df_concepts.iterrows(), total=len(df_concepts), desc="Concept"):
+        name = row['name']
+        try:
+            df_daily = ak_fetcher.fetch_concept_daily(name, start_str, end_str)
+            if not df_daily.empty:
+                df_daily['concept_name'] = name
+                df_daily = cleaner.clean_daily_market_data(df_daily)
+                storage.save_partitioned(df_daily, "concept_price_daily", key_col='concept_name')
+            
+            # 适当限流，同花顺接口较为敏感
+            time.sleep(0.3) 
+        except: pass
 
 # ==========================================
-# 4. 🗞️ 另类数据 (拆分为独立任务)
+# 6. 🗞️ 另类数据 (Alternative)
 # ==========================================
 
 def run_alt_news(mode: str):
-    """任务: 仅仅更新新闻联播"""
+    """仅更新新闻联播"""
     start_date, end_date = get_date_range(mode)
     logger.info(f"🚀 Starting ALT: CCTV News update: {start_date} -> {end_date}")
     
@@ -147,7 +176,7 @@ def run_alt_news(mode: str):
     cleaner = DataCleaner()
     ak_fetcher = AkshareFetcher()
     
-    start = datetime.datetime.strptime('2016-03-30', "%Y-%m-%d") # 新闻联播数据起始日期
+    start = datetime.datetime.strptime('2016-03-30', "%Y-%m-%d") 
     end = datetime.datetime.strptime(end_date, "%Y-%m-%d")
     date_generated = [start + datetime.timedelta(days=x) for x in range(0, (end-start).days + 1)]
     
@@ -161,7 +190,7 @@ def run_alt_news(mode: str):
         except: pass
 
 def run_alt_industry_pe(mode: str):
-    """任务: 仅更新行业市盈率"""
+    """仅更新行业市盈率"""
     start_date, end_date = get_date_range(mode)
     logger.info(f"🚀 Starting ALT: Industry PE update: {start_date} -> {end_date}")
     
@@ -169,7 +198,7 @@ def run_alt_industry_pe(mode: str):
     cleaner = DataCleaner()
     ak_fetcher = AkshareFetcher()
     
-    start = datetime.datetime.strptime('2023-05-19', "%Y-%m-%d") # 行业PE数据起始日期，可能会逐渐推后
+    start = datetime.datetime.strptime('2023-05-19', "%Y-%m-%d")
     end = datetime.datetime.strptime(end_date, "%Y-%m-%d")
     date_generated = [start + datetime.timedelta(days=x) for x in range(0, (end-start).days + 1)]
     
@@ -185,33 +214,26 @@ def run_alt_industry_pe(mode: str):
         except: pass
 
 def run_alt_market_metric(mode: str):
-    """任务: 更新全市场估值 (PE/PB)"""
+    """更新全市场估值 (PE/PB)"""
     logger.info(f"🚀 Starting ALT: Market Metrics (PE/PB) update")
-    
     storage = ParquetStorage(PROCESSED_DIR)
     cleaner = DataCleaner()
     ak_fetcher = AkshareFetcher()
     
     try:
-        # 1. 市场PE
-        logger.info("Fetching Market PE...")
         df_pe = ak_fetcher.fetch_market_pe()
         if not df_pe.empty and 'date' in df_pe.columns:
             df_pe = cleaner.normalize_date(df_pe)
             storage.save_partitioned(df_pe, "market_pe_lg", key_col='date')
 
-        # 2. 市场PB
-        logger.info("Fetching Market PB...")
         df_pb = ak_fetcher.fetch_market_pb()
         if not df_pb.empty and 'date' in df_pb.columns:
             df_pb = cleaner.normalize_date(df_pb)
             storage.save_partitioned(df_pb, "market_pb_all", key_col='date')
-            
     except Exception as e:
         logger.error(f"Failed to update market metrics: {e}")
 
 def run_alt_all(mode: str):
-    """任务: 更新所有另类数据"""
     run_alt_news(mode)
     run_alt_industry_pe(mode)
     run_alt_market_metric(mode)
@@ -222,14 +244,16 @@ def run_alt_all(mode: str):
 if __name__ == "__main__":
     # 定义支持的任务列表
     TASKS = [
-        'all',           # 跑所有
-        'stock',         # 仅股票
-        'etf',           # 仅ETF
-        'finance',       # 仅财务+概念
-        'alt',           # 所有另类数据
-        'alt_news',      # [新增] 仅新闻
-        'alt_industry_pe', # [新增] 仅行业PE
-        'alt_market_metric' # [新增] 仅市场整体估值
+        'all',             # 跑所有
+        'stock',           # 个股行情
+        'index',           # [新增] 指数行情
+        'etf',             # ETF行情
+        'finance',         # 财务报表
+        'concept',         # [新增] 概念板块
+        'alt',             # 所有另类数据
+        'alt_news',        # 仅新闻
+        'alt_industry_pe', # 仅行业PE
+        'alt_market_metric'# 仅市场估值
     ]
 
     parser = argparse.ArgumentParser(description="AlphaFactorLab Data Updater")
@@ -242,11 +266,16 @@ if __name__ == "__main__":
     
     # 任务调度逻辑
     if args.task == 'all':
+        run_index_update(args.mode) # 先跑指数，速度快
         run_stock_update(args.mode)
         run_etf_update(args.mode)
         run_finance_update(args.mode)
+        run_concept_update(args.mode)
         run_alt_all(args.mode)
-        
+    
+    elif args.task == 'index':
+        run_index_update(args.mode)
+
     elif args.task == 'stock':
         run_stock_update(args.mode)
         
@@ -255,6 +284,9 @@ if __name__ == "__main__":
         
     elif args.task == 'finance':
         run_finance_update(args.mode)
+        
+    elif args.task == 'concept':
+        run_concept_update(args.mode)
         
     elif args.task == 'alt':
         run_alt_all(args.mode)
