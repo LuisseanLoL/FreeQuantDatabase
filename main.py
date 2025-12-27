@@ -147,7 +147,7 @@ def run_alt_news(mode: str):
     cleaner = DataCleaner()
     ak_fetcher = AkshareFetcher()
     
-    start = datetime.datetime.strptime(start_date, "%Y-%m-%d")
+    start = datetime.datetime.strptime('2016-03-30', "%Y-%m-%d") # 新闻联播数据起始日期
     end = datetime.datetime.strptime(end_date, "%Y-%m-%d")
     date_generated = [start + datetime.timedelta(days=x) for x in range(0, (end-start).days + 1)]
     

@@ -1,173 +1,114 @@
-# 🚀 FreeQuantDatabase: 本地化 A 股量化数据库
+# 🏦 FreeQuantDatabase
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![DuckDB](https://img.shields.io/badge/Database-DuckDB-yellow) ![Data](https://img.shields.io/badge/Data-Parquet-orange)
+![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![DuckDB](https://img.shields.io/badge/Database-DuckDB-yellow) ![Status](https://img.shields.io/badge/Status-Production-success)
 
-**FreeQuantDatabase** 是一个**完全免费、开源、无需繁琐注册**的 A 股量化数据解决方案。
+**FreeQuantDatabase** 是一个完全免费、本地化、高性能的 A 股量化数据仓库解决方案。
 
-旨在为个人宽客（Quants）提供一套标准化的 **ETL（提取、转换、加载）** 流程，将散落在互联网各个免费角落的金融数据（Baostock, Akshare, Mootdx 等）清洗并整合为高性能的 **Parquet** 文件，并通过 **DuckDB** 实现极速查询。
-
-> **核心理念**：数据应该像空气一样免费。拒绝高昂的终端费用，构建属于你自己的本地金融数据湖。感谢Baostock, Akshare, Mootdx 等开发者提供的开源接口！
+它不包含任何策略逻辑，只专注于一件事：**将互联网上散乱的免费金融数据（Baostock, Akshare, Mootdx），清洗并结构化为高性能的 Parquet 数据湖，供下游的回测或因子系统调用。感谢Baostock, Akshare, Mootdx 等开发者提供的开源接口！**
 
 ---
 
 ## ✨ 核心特性
 
-*   **💸 零成本 & 无门槛**：
-    *   无需购买 Wind/Choice 账号。
-    *   无需申请复杂的 API Token。
-    *   集成 **Baostock** (证券宝)、**Akshare** (开源财经)、**Mootdx** (通达信协议) 三大免费源。
-*   **🏗️ 专业级存储架构**：
-    *   采用 **Parquet** 列式存储，压缩率极高（全量历史数据仅需数 GB）。
-    *   遵循 **Hive Partitioning** (`year=2025/sh.600000.parquet`)，支持大数据量下的秒级分区裁剪。
-    *   支持 **DuckDB** "零拷贝" 挂载，像查询 SQL 一样查询文件。
+*   **🧱 纯粹的数据基座**：解耦策略与数据，只做 ETL (Extract, Transform, Load)。
+*   **💸 永久免费**：基于 Baostock、Akshare、Mootdx 等开源接口，零成本构建本地数据中心。
+*   **⚡ 极速存储**：
+    *   **Parquet + Snappy**：高压缩比列式存储。
+    *   **Hive Partitioning**：按年份分区，支持秒级查询过滤。
+    *   **DuckDB Ready**：支持“零拷贝”SQL 查询，无缝对接 Pandas。
 *   **🔄 幂等增量更新**：
-    *   独创的 **"按年覆盖" (Partition Overwrite)** 更新策略。
-    *   每天运行一次 Update，自动修正当年所有历史数据（解决昨收修正、除权除息回溯问题），且天然去重，无需担心重复数据。
-*   **🧩 模块化设计**：
-    *   Fetcher (采集) -> Processor (清洗) -> Storage (存储) 职责分离，易于扩展。
+    *   采用 **"按年文件名覆盖"** 策略。
+    *   每日运行 Update 模式，自动刷新当年数据，天然去重，支持断点续传。
 
 ---
 
-## 📚 数据支持
+## 📊 数据资产清单
 
-| 数据类型 | 数据源 | 频率 | 说明 |
+| 类别 | 存储路径 (data/processed/...) | 关键字段 (Key) | 数据源 |
 | :--- | :--- | :--- | :--- |
-| **📈 个股行情** | Baostock | 日频 | 包含开高低收、成交量、换手率、复权因子等 (1990年至今) |
-| **📊 指数行情** | Baostock | 日频 | 上证/深证/创业/科创/沪深300等主流指数 |
-| **💰 ETF 行情** | Mootdx | 日频 | 基于通达信协议，包含宽基、行业、跨境、商品 ETF |
-| **📑 财务报表** | Akshare | 季频 | 营收、净利润、ROE、负债率等 30+ 核心财务指标 |
-| **💡 概念板块** | Akshare | 日频 | 同花顺概念板块指数及成分股 |
-| **📰 另类数据** | Akshare | 日频 | 新闻联播文字稿 (NLP情感分析)、行业市盈率 (PE/PB) |
+| **个股日线** | `stock_price_daily` | `code` (如 sh.600519) | Baostock (后复权) |
+| **指数日线** | `index_price_daily` | `code` (如 sh.000001) | Baostock |
+| **ETF日线** | `etf_price_daily` | `name` (如 HS300) | Mootdx (通达信) |
+| **财务报表** | `stock_financial` | `code` (按报告期分区) | Akshare (同花顺源) |
+| **概念板块** | `concept_price_daily` | `concept_name` | Akshare (同花顺源) |
+| **另类数据** | `alt_cctv_news` | `date` | 新闻联播文字稿 |
+| **另类数据** | `industry_pe_daily` | `date` | 证监会行业市盈率 |
+| **另类数据** | `market_pe_lg` | `date` | A股全市场PE估值 |
 
 ---
 
-## 🛠️ 安装指南
+## 🚀 快速开始
 
-### 1. 克隆项目
+### 1. 环境准备
 ```bash
 git clone https://github.com/yourname/FreeQuantDatabase.git
 cd FreeQuantDatabase
-```
-
-### 2. 创建虚拟环境 (推荐)
-```bash
-# Windows
-python -m venv venv
-.\venv\Scripts\activate
-
-# Mac/Linux
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 3. 安装依赖
-```bash
 pip install -r requirements.txt
 ```
 
----
-
-## 🏃‍♂️ 运行说明
-
-项目通过 `main.py` 统一调度。优先使用后复权数据以避免增量更新时数据无法对齐。
-
-### 1. 全量初始化 (首次运行)
-下载 1990 年至今的所有历史数据。耗时较长（视网络情况约 1-2 小时），建议挂机运行。
+### 2. 全量初始化 (下载 1990年至今数据)
+*建议在网络良好的环境下挂机运行。*
 ```bash
 python main.py --mode full --task all
 ```
 
-### 2. 日常增量更新 (每日收盘后)
-下载 **当年 (Current Year)** 的所有数据并覆盖当年的分区文件。
-*   **特点**：速度快，且能自动修正近期可能变动的历史数据。
+### 3. 日常更新 (每日收盘后)
+*自动回溯并覆盖当年的数据，修正昨收盘及除权信息。*
 ```bash
 python main.py --mode update --task all
 ```
 
-### 3. 分任务运行
-如果你只想更新某类数据：
+### 4. 细粒度任务控制
 ```bash
-python main.py --mode update --task stock    # 仅更新股票
-python main.py --mode update --task etf      # 仅更新ETF
-python main.py --mode update --task finance  # 仅更新财报
+python main.py --mode update --task stock            # 仅更新个股
+python main.py --mode update --task finance          # 仅更新财报
+python main.py --mode update --task alt_industry_pe  # 仅更新行业PE
 ```
 
 ---
 
-## 🔎 如何使用数据 (DuckDB)
+## 🔗 如何在其他项目中调用？
 
-数据下载后存储在 `data/processed/` 目录下。你可以直接读取 Parquet，或者使用 DuckDB 进行 SQL 查询。
+**FreeQuantDatabase** 产生的 `data/processed` 文件夹就是一个标准的 **Data Lake**。
+你不需要在策略项目中引用本项目的 Python 代码，只需使用 **DuckDB** 直连文件夹。
 
-**Python 示例代码：**
+**示例：在你的回测项目 (`MyBacktest`) 中读取数据**
 
 ```python
 import duckdb
 
-# 1. 建立连接 (内存模式或文件模式)
-con = duckdb.connect()
+# 指向 FreeQuantDatabase 的数据目录
+DB_PATH = "E:/Projects/FreeQuantDatabase/data/processed"
 
-# 2. 注册视图 (自动识别 hive 分区)
-# 注意：*.parquet 会自动递归搜索所有年份文件夹
-con.execute("""
+# 1. 连接并注册视图 (View)
+con = duckdb.connect()
+con.execute(f"""
     CREATE VIEW stock_kline AS 
-    SELECT * FROM read_parquet('data/processed/stock_price_daily/*/*.parquet', hive_partitioning=true)
+    SELECT * FROM read_parquet('{DB_PATH}/stock_price_daily/*/*.parquet', hive_partitioning=true);
+    
+    CREATE VIEW finance AS 
+    SELECT * FROM read_parquet('{DB_PATH}/stock_financial/*/*.parquet', hive_partitioning=true);
 """)
 
-# 3. 执行 SQL 查询
-# 查询 贵州茅台 (sh.600519) 2023年以来的收盘价和PE
-df = con.query("""
-    SELECT date, code, close, peTTM 
-    FROM stock_kline 
-    WHERE code = 'sh.600519' 
-      AND year >= 2023
-    ORDER BY date
-""").df()
+# 2. 像查询数据库一样使用
+# 获取 贵州茅台 2024年的量价数据
+df_price = con.query("SELECT * FROM stock_kline WHERE code='sh.600519' AND year=2024").df()
 
-print(df)
+# 获取 2024年报的 ROE
+df_fund = con.query("SELECT * FROM finance WHERE code='600519' AND year=2024").df()
 ```
 
 ---
 
-## 📂 目录结构
+## 🛠️ 维护与贡献
 
-```text
-FreeQuantDatabase/
-├── config/                 # 配置文件 (资产池、路径)
-├── data/                   # 数据存储目录 (已加入 .gitignore)
-│   └── processed/          # 清洗后的 Parquet 文件
-│       ├── stock_price_daily/
-│       │   └── year=2025/  # Hive 分区
-│       │       └── sh.600000.parquet
-│       ├── stock_financial/
-│       └── ...
-├── logs/                   # 运行日志
-├── src/                    # 源代码
-│   ├── fetchers/           # 爬虫/API 接口 (Baostock, Akshare, Mootdx)
-│   ├── processors/         # 数据清洗 (清洗字段、日期对齐)
-│   ├── storage/            # 存储管理 (Parquet 读写、DuckDB 连接)
-│   └── utils/              # 通用工具 (日志、日期计算)
-├── main.py                 # 程序主入口
-└── requirements.txt        # 依赖库
+*   **数据清洗逻辑**：位于 `src/processors/cleaner.py`，可根据需求调整字段映射。
+*   **资产池配置**：位于 `config/settings.py`，可添加新的 ETF 或指数。
+
+---
+
+## ⚖️ License
+
+MIT License. 
+本项目仅供学习研究，数据来源于公开网络接口，使用者需自行核实数据准确性。
 ```
-
----
-
-## 📝 常见问题 (FAQ)
-
-**Q: 为什么生成的 Parquet 文件名是 `sh.600000.parquet` 而不是随机乱码？**
-A: 为了支持 **幂等更新**。通过以代码命名，我们可以在 Update 模式下直接覆盖对应的文件，而不需要删除整个文件夹。这使得系统支持断点续传，且不会产生重复数据。
-
-**Q: Baostock 提示登录失败？**
-A: Baostock 即使不注册也能使用（匿名登录），代码内部已处理。如果报错网络问题，通常是服务器波动，稍后重试即可。
-
-**Q: 数据更新频率是多少？**
-A: 建议在每个交易日 **18:00** 以后运行更新脚本，以确保各大源的数据已归档。
-
----
-
-## ⚖️ 免责声明
-
-本项目仅供学习和研究使用，数据来源于互联网公开免费接口。
-*   使用者应自行核实数据的准确性。
-*   严禁将本项目用于任何商业用途或非法用途。
-*   投资有风险，入市需谨慎。本项目不构成任何投资建议。
