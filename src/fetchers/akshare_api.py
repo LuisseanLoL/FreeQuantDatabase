@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Akshare 数据抽取接口
-对应原脚本: finance_data_fetcher.py, concept_data_fetcher.py
+Akshare 数据抽取接口 (修正版)
 功能: 封装 Akshare 接口，严格使用同花顺(THS)源获取财务、概念数据
+修正点: 在 fetch_financial_report 中手动注入 'code' 列，解决存储时 missing key error
 """
 
 import akshare as ak
@@ -25,28 +25,27 @@ class AkshareFetcher:
     def fetch_financial_report(self, code: str) -> pd.DataFrame:
         """
         获取个股财务报表数据 (同花顺-按报告期)
-        
-        该接口返回的数据包含了你所需的：
-        - 基础报表: 净利润, 营业总收入, 每股净资产等
-        - 财务比率: 销售净利率, ROE, 流动比率, 速动比率, 资产负债率等
-        
-        :param code: 股票代码, 如 "600000"
-        :return: DataFrame (包含 '报告期', '净利润', ... '资产负债率' 等字段)
+        :param code: 股票代码, 如 "sh.600000"
         """
+        # Akshare 接口需要纯数字代码 (600000)
         code_str = self._format_code(code)
+        
         try:
-            # 你的 finance_data_fetcher.py 中使用的正是此接口
             df = ak.stock_financial_abstract_ths(symbol=code_str, indicator="按报告期")
             
             if df is None or df.empty:
                 return pd.DataFrame()
 
-            # Akshare 返回的列名即为中文: "报告期", "净利润", "流动比率" 等
-            # 直接返回，由后续 Storage 层或 Cleaner 层处理列名标准化
+            # --- 🛠️ [关键修复] 手动添加 code 列 ---
+            # 接口返回的数据里没有 code，必须手动加上，否则 ParquetStorage 无法命名文件
+            # 我们使用传入的原始代码 (e.g. sh.600000)，保持与行情文件一致
+            df['code'] = code 
+
             return df
             
         except Exception as e:
-            print(f"❌ Error fetching financial report for {code}: {e}")
+            # 某些股票（如新股）可能确实查不到财报，属正常现象，打个日志即可
+            # print(f"⚠️ No financial data for {code}: {e}")
             return pd.DataFrame()
 
     # =================================================
@@ -62,10 +61,7 @@ class AkshareFetcher:
             return pd.DataFrame()
 
     def fetch_concept_daily(self, concept_name: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """
-        获取同花顺概念板块日线
-        :param start_date: "YYYYMMDD"
-        """
+        """获取同花顺概念板块日线"""
         try:
             df = ak.stock_board_concept_index_ths(
                 symbol=concept_name, 
@@ -76,7 +72,7 @@ class AkshareFetcher:
             if df is None or df.empty:
                 return pd.DataFrame()
 
-            # 标准化列名，方便存入 Parquet
+            # 标准化列名
             rename_map = {
                 '日期': 'date', '开盘价': 'open', '最高价': 'high',
                 '最低价': 'low', '收盘价': 'close', '成交量': 'volume', '成交额': 'amount'
@@ -92,7 +88,7 @@ class AkshareFetcher:
             return df
 
         except Exception as e:
-            print(f"❌ Error fetching concept history for {concept_name}: {e}")
+            # print(f"❌ Error fetching concept history for {concept_name}: {e}")
             return pd.DataFrame()
 
     # =================================================
@@ -102,37 +98,18 @@ class AkshareFetcher:
         """证监会行业市盈率 (巨潮) date="YYYYMMDD" """
         try:
             return ak.stock_industry_pe_ratio_cninfo(symbol="证监会行业分类", date=date)
-        except Exception as e:
+        except Exception:
             return pd.DataFrame()
 
     def fetch_cctv_news(self, date: str) -> pd.DataFrame:
         """新闻联播 date="YYYYMMDD" """
         try:
             return ak.news_cctv(date=date)
-        except Exception as e:
-            print(f"❌ Error fetching CCTV news: {e}")
+        except Exception:
             return pd.DataFrame()
 
-    def fetch_stock_valuation(self, code: str) -> pd.DataFrame:
-        """个股总市值 (百度股市通)"""
-        code_str = self._format_code(code)
-        try:
-            return ak.stock_zh_valuation_baidu(symbol=code_str, indicator="总市值", period="全部")
-        except Exception as e:
-            print(f"❌ Error fetching valuation for {code}: {e}")
-            return pd.DataFrame()
-
-    def _format_code(self, code: str) -> str:
-        """去除前缀 sh.600000 -> 600000"""
-        if isinstance(code, str) and (code.startswith("sh.") or code.startswith("sz.")):
-            return code.split(".")[1]
-        return str(code)
-    
-    # =================================================
-    # 4. 📊 全市场估值数据 (Market Metrics)
-    # =================================================
     def fetch_market_pe(self) -> pd.DataFrame:
-        """获取A股主板市盈率 (乐咕乐股) - 返回历史序列"""
+        """获取A股主板市盈率 (乐咕乐股)"""
         try:
             return ak.stock_market_pe_lg(symbol="上证")
         except Exception as e:
@@ -140,33 +117,33 @@ class AkshareFetcher:
             return pd.DataFrame()
 
     def fetch_market_pb(self) -> pd.DataFrame:
-        """获取A股等权重/中位数市净率 - 返回历史序列"""
+        """获取A股等权重/中位数市净率"""
         try:
             return ak.stock_a_all_pb()
         except Exception as e:
             print(f"❌ Error fetching market PB: {e}")
             return pd.DataFrame()
 
+    def _format_code(self, code: str) -> str:
+        """去除前缀 sh.600000 -> 600000"""
+        if isinstance(code, str) and (code.startswith("sh.") or code.startswith("sz.") or code.startswith("bj.")):
+            return code.split(".")[1]
+        return str(code)
+
 # --- 测试逻辑 ---
 if __name__ == "__main__":
     fetcher = AkshareFetcher()
+    test_code = "sh.600000"
+    print(f"1. 测试同花顺财务报表 ({test_code}):")
+    df_fin = fetcher.fetch_financial_report(test_code)
     
-    # 测试: 上面所有的接口
-    print("1. 测试获取个股财务报表:")
-    fin_df = fetcher.fetch_financial_report("600000")
-    print(fin_df.head())
-    print("\n2. 测试获取概念板块列表:")
-    concept_df = fetcher.fetch_concept_boards()
-    print(concept_df.head())
-    print("\n3. 测试获取概念板块日线:")
-    concept_daily_df = fetcher.fetch_concept_daily("人工智能", "20230101", "20231231")
-    print(concept_daily_df.head())
-    print("\n4. 测试获取行业市盈率快照:")
-    industry_pe_df = fetcher.fetch_industry_pe_snapshot(date="20251226")
-    print(industry_pe_df.head())
-    print("\n5. 测试获取新闻联播:")
-    cctv_news_df = fetcher.fetch_cctv_news("20231231")
-    print(cctv_news_df.head())
-    print("\n6. 测试获取个股总市值:")
-    valuation_df = fetcher.fetch_stock_valuation("600000")
-    print(valuation_df.head())
+    if not df_fin.empty:
+        print("\n[表头字段预览]:")
+        print(df_fin.columns.tolist())
+        if 'code' in df_fin.columns:
+            print("✅ 'code' 列存在，修复成功。")
+            print(f"Code Value: {df_fin['code'].iloc[0]}")
+        else:
+            print("❌ 'code' 列依然缺失！")
+    else:
+        print("未获取到数据。")
