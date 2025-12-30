@@ -109,13 +109,11 @@ def run_etf_update(mode: str):
 # 4. 💰 财务报表 (Finance)
 # ==========================================
 def run_finance_update(mode: str):
-    """仅更新财务报表，不再包含概念数据"""
     logger.info(f"🚀 Starting FINANCIAL REPORT update")
     storage = ParquetStorage(PROCESSED_DIR)
     cleaner = DataCleaner()
     ak_fetcher = AkshareFetcher()
     
-    # 借助 Baostock 获取最新的股票列表
     with BaostockFetcher() as bs:
         raw_codes = bs.fetch_all_stock_codes()
         stock_codes = [c for c in raw_codes if not (c.startswith("sh.000") or c.startswith("sz.399"))]
@@ -125,9 +123,21 @@ def run_finance_update(mode: str):
         try:
             df = ak_fetcher.fetch_financial_report(code)
             if not df.empty:
-                df = cleaner.clean_financial_report(df)
-                storage.save_partitioned(df, "stock_financial", partition_col="report_date", key_col='code')
-        except: pass
+                # 1. 清洗并转置
+                df_clean = cleaner.clean_financial_report(df)
+                
+                # 2. 存储
+                # 确保 df_clean 里有 code 和 report_date
+                # 即使不做任何列名映射，Parquet 也能存中文列名
+                storage.save_partitioned(
+                    df_clean, 
+                    "stock_financial", 
+                    partition_col="report_date", 
+                    key_col='code'
+                )
+        except Exception as e:
+            logger.error(f"Finance Error {code}: {e}") # 调试时可解开
+            pass
 
 # ==========================================
 # 5. 💡 概念板块 (Concept) - [独立拆分]

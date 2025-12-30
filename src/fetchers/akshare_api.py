@@ -24,35 +24,34 @@ class AkshareFetcher:
     # =================================================
     def fetch_financial_report(self, code: str) -> pd.DataFrame:
         """
-        获取个股财务报表数据 (同花顺-按报告期)
-        :param code: 股票代码, 如 "sh.600000"
+        获取个股财务摘要 (全量数据)
+        接口: stock_financial_abstract
+        返回格式: 原始透视表 (行:指标, 列:日期)
         """
-        # Akshare 接口需要纯数字代码 (600000)
         code_str = self._format_code(code)
         
         try:
-            df = ak.stock_financial_abstract_ths(symbol=code_str, indicator="按报告期")
+            # 新接口: 返回的数据是 透视表结构
+            df = ak.stock_financial_abstract(symbol=code_str)
             
             if df is None or df.empty:
                 return pd.DataFrame()
 
-            # --- 🛠️ [关键修复] 手动添加 code 列 ---
-            # 接口返回的数据里没有 code，必须手动加上，否则 ParquetStorage 无法命名文件
-            # 我们使用传入的原始代码 (e.g. sh.600000)，保持与行情文件一致
+            # 手动注入 code，方便后续处理
+            # 注意：因为现在返回的是宽表，我们把 code 作为一个属性附加，或者在 cleaner 里处理
+            # 这里我们选择不直接修改 df 结构，而是返回原始 df，
+            # 但为了传递 code，我们可以临时加一列，cleaner 转置时会处理它
             df['code'] = code 
 
             return df
             
-        except Exception as e:
-            # 某些股票（如新股）可能确实查不到财报，属正常现象，打个日志即可
-            # print(f"⚠️ No financial data for {code}: {e}")
+        except Exception:
             return pd.DataFrame()
 
     # =================================================
-    # 2. 💡 概念板块数据 (Concept - THS)
+    # 2. 💡 概念板块数据
     # =================================================
     def fetch_concept_boards(self) -> pd.DataFrame:
-        """获取同花顺概念板块列表"""
         try:
             print("正在获取同花顺概念板块列表...")
             return ak.stock_board_concept_name_ths()
@@ -61,71 +60,42 @@ class AkshareFetcher:
             return pd.DataFrame()
 
     def fetch_concept_daily(self, concept_name: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """获取同花顺概念板块日线"""
         try:
             df = ak.stock_board_concept_index_ths(
                 symbol=concept_name, 
                 start_date=start_date, 
                 end_date=end_date
             )
-            
-            if df is None or df.empty:
-                return pd.DataFrame()
+            if df is None or df.empty: return pd.DataFrame()
 
-            # 标准化列名
-            rename_map = {
-                '日期': 'date', '开盘价': 'open', '最高价': 'high',
-                '最低价': 'low', '收盘价': 'close', '成交量': 'volume', '成交额': 'amount'
-            }
+            rename_map = {'日期': 'date', '开盘价': 'open', '最高价': 'high','最低价': 'low', '收盘价': 'close', '成交量': 'volume', '成交额': 'amount'}
             df = df.rename(columns=rename_map)
             df['date'] = pd.to_datetime(df['date'])
-            
-            # 转换数值类型
-            numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'amount']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            for col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+                if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
-
-        except Exception as e:
-            # print(f"❌ Error fetching concept history for {concept_name}: {e}")
-            return pd.DataFrame()
+        except Exception: return pd.DataFrame()
 
     # =================================================
-    # 3. 🏭 行业与另类数据
+    # 3. 另类数据
     # =================================================
     def fetch_industry_pe_snapshot(self, date: str) -> pd.DataFrame:
-        """证监会行业市盈率 (巨潮) date="YYYYMMDD" """
-        try:
-            return ak.stock_industry_pe_ratio_cninfo(symbol="证监会行业分类", date=date)
-        except Exception:
-            return pd.DataFrame()
+        try: return ak.stock_industry_pe_ratio_cninfo(symbol="证监会行业分类", date=date)
+        except: return pd.DataFrame()
 
     def fetch_cctv_news(self, date: str) -> pd.DataFrame:
-        """新闻联播 date="YYYYMMDD" """
-        try:
-            return ak.news_cctv(date=date)
-        except Exception:
-            return pd.DataFrame()
+        try: return ak.news_cctv(date=date)
+        except: return pd.DataFrame()
 
     def fetch_market_pe(self) -> pd.DataFrame:
-        """获取A股主板市盈率 (乐咕乐股)"""
-        try:
-            return ak.stock_market_pe_lg(symbol="上证")
-        except Exception as e:
-            print(f"❌ Error fetching market PE: {e}")
-            return pd.DataFrame()
+        try: return ak.stock_market_pe_lg(symbol="上证")
+        except: return pd.DataFrame()
 
     def fetch_market_pb(self) -> pd.DataFrame:
-        """获取A股等权重/中位数市净率"""
-        try:
-            return ak.stock_a_all_pb()
-        except Exception as e:
-            print(f"❌ Error fetching market PB: {e}")
-            return pd.DataFrame()
+        try: return ak.stock_a_all_pb()
+        except: return pd.DataFrame()
 
     def _format_code(self, code: str) -> str:
-        """去除前缀 sh.600000 -> 600000"""
         if isinstance(code, str) and (code.startswith("sh.") or code.startswith("sz.") or code.startswith("bj.")):
             return code.split(".")[1]
         return str(code)
