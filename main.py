@@ -1,18 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-AlphaFactorLab 数据更新主程序 (高度解耦版)
+AlphaFactorLab 数据更新主程序 (高度解耦版 + 指定代码支持)
 功能: 调度各个 Fetcher，清洗数据，并存储为 Hive Partition Parquet
 用法示例:
-    python main.py --mode update --task concept     <-- 仅更新概念板块
-    python main.py --mode update --task index       <-- 仅更新大盘指数
-    python main.py --mode update --task stock       <-- 更新个股行情
+    python main.py --mode update --task stock                            <-- 更新所有个股
+    python main.py --mode update --task stock --codes sh.600000 sz.000001 <-- 仅更新指定个股
+    python main.py --mode update --task finance --codes sh.600000        <-- 仅更新指定个股财报
 """
 
 import argparse
 import datetime
 import time
 from tqdm import tqdm
-from typing import Tuple
+from typing import Tuple, List, Optional # 引入 List, Optional
+import random
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -62,7 +63,11 @@ def run_index_update(mode: str):
 # ==========================================
 # 2. 📈 个股 (Stock)
 # ==========================================
-def run_stock_update(mode: str):
+def run_stock_update(mode: str, specific_codes: Optional[List[str]] = None):
+    """
+    更新个股行情
+    :param specific_codes: 指定代码列表 (e.g. ['sh.600000']), 若为 None 则更新全市场
+    """
     start_date, end_date = get_date_range(mode)
     logger.info(f"🚀 Starting STOCK update ({mode}): {start_date} -> {end_date}")
     
@@ -70,10 +75,16 @@ def run_stock_update(mode: str):
     cleaner = DataCleaner()
     
     with BaostockFetcher() as bs:
-        raw_codes = bs.fetch_all_stock_codes()
-        # 严格过滤，只保留个股
-        stock_codes = [c for c in raw_codes if not (c.startswith("sh.000") or c.startswith("sz.399"))]
-        logger.info(f"Found {len(stock_codes)} stocks.")
+        # --- 修改逻辑：支持指定代码 ---
+        if specific_codes:
+            stock_codes = specific_codes
+            logger.info(f"🎯 Updating {len(stock_codes)} specific stocks...")
+        else:
+            raw_codes = bs.fetch_all_stock_codes()
+            # 严格过滤，只保留个股
+            stock_codes = [c for c in raw_codes if not (c.startswith("sh.000") or c.startswith("sz.399"))]
+            logger.info(f"Found {len(stock_codes)} stocks (Full Market).")
+        # ---------------------------
         
         for code in tqdm(stock_codes, desc="Stocks"):
             try:
@@ -108,39 +119,42 @@ def run_etf_update(mode: str):
 # ==========================================
 # 4. 💰 财务报表 (Finance)
 # ==========================================
-def run_finance_update(mode: str):
+def run_finance_update(mode: str, specific_codes: Optional[List[str]] = None):
+    """
+    更新财务报表
+    :param specific_codes: 指定代码列表
+    """
     logger.info(f"🚀 Starting FINANCIAL REPORT update")
     storage = ParquetStorage(PROCESSED_DIR)
     cleaner = DataCleaner()
     ak_fetcher = AkshareFetcher()
     
-    with BaostockFetcher() as bs:
-        raw_codes = bs.fetch_all_stock_codes()
-        stock_codes = [c for c in raw_codes if not (c.startswith("sh.000") or c.startswith("sz.399"))]
-        
-    logger.info(f"Updating Financial Reports for {len(stock_codes)} stocks...")
+    # --- 修改逻辑：支持指定代码 ---
+    if specific_codes:
+        stock_codes = specific_codes
+        logger.info(f"🎯 Updating Financial Reports for {len(stock_codes)} specific stocks...")
+    else:
+        with BaostockFetcher() as bs:
+            raw_codes = bs.fetch_all_stock_codes()
+            stock_codes = [c for c in raw_codes if not (c.startswith("sh.000") or c.startswith("sz.399"))]
+        logger.info(f"Updating Financial Reports for {len(stock_codes)} stocks (Full Market)...")
+    # ---------------------------
+
     for code in tqdm(stock_codes, desc="Finance"):
         try:
             df = ak_fetcher.fetch_financial_report(code)
             if not df.empty:
-                # 1. 清洗并转置
-                df_clean = cleaner.clean_financial_report(df)
-                
-                # 2. 存储
-                # 确保 df_clean 里有 code 和 report_date
-                # 即使不做任何列名映射，Parquet 也能存中文列名
-                storage.save_partitioned(
-                    df_clean, 
-                    "stock_financial", 
-                    partition_col="report_date", 
-                    key_col='code'
-                )
-        except Exception as e:
-            logger.error(f"Finance Error {code}: {e}") # 调试时可解开
+                df = cleaner.clean_financial_report(df)
+                storage.save_partitioned(df, "stock_financial", partition_col="report_date", key_col='code')
+            
+            # 随机休眠
+            time.sleep(random.uniform(1.5, 3.5)) 
+            
+        except Exception:
             pass
 
 # ==========================================
-# 5. 💡 概念板块 (Concept) - [独立拆分]
+# 5. 💡 概念板块 (Concept)
 # ==========================================
 def run_concept_update(mode: str):
     start_date, end_date = get_date_range(mode)
@@ -169,7 +183,6 @@ def run_concept_update(mode: str):
                 df_daily = cleaner.clean_daily_market_data(df_daily)
                 storage.save_partitioned(df_daily, "concept_price_daily", key_col='concept_name')
             
-            # 适当限流，同花顺接口较为敏感
             time.sleep(0.3) 
         except: pass
 
@@ -178,7 +191,6 @@ def run_concept_update(mode: str):
 # ==========================================
 
 def run_alt_news(mode: str):
-    """仅更新新闻联播"""
     start_date, end_date = get_date_range(mode)
     logger.info(f"🚀 Starting ALT: CCTV News update: {start_date} -> {end_date}")
     
@@ -200,7 +212,6 @@ def run_alt_news(mode: str):
         except: pass
 
 def run_alt_industry_pe(mode: str):
-    """仅更新行业市盈率"""
     start_date, end_date = get_date_range(mode)
     logger.info(f"🚀 Starting ALT: Industry PE update: {start_date} -> {end_date}")
     
@@ -224,7 +235,6 @@ def run_alt_industry_pe(mode: str):
         except: pass
 
 def run_alt_market_metric(mode: str):
-    """更新全市场估值 (PE/PB)"""
     logger.info(f"🚀 Starting ALT: Market Metrics (PE/PB) update")
     storage = ParquetStorage(PROCESSED_DIR)
     cleaner = DataCleaner()
@@ -252,31 +262,27 @@ def run_alt_all(mode: str):
 # 主入口
 # ==========================================
 if __name__ == "__main__":
-    # 定义支持的任务列表
     TASKS = [
-        'all',             # 跑所有
-        'stock',           # 个股行情
-        'index',           # [新增] 指数行情
-        'etf',             # ETF行情
-        'finance',         # 财务报表
-        'concept',         # [新增] 概念板块
-        'alt',             # 所有另类数据
-        'alt_news',        # 仅新闻
-        'alt_industry_pe', # 仅行业PE
-        'alt_market_metric'# 仅市场估值
+        'all', 'stock', 'index', 'etf', 'finance', 'concept', 
+        'alt', 'alt_news', 'alt_industry_pe', 'alt_market_metric'
     ]
 
     parser = argparse.ArgumentParser(description="AlphaFactorLab Data Updater")
     parser.add_argument('--mode', type=str, choices=['full', 'update'], default='update', help='full: 全量, update: 当年增量')
     parser.add_argument('--task', type=str, choices=TASKS, default='all', help='指定运行的任务')
     
+    # --- [新增参数] 支持指定股票代码 ---
+    parser.add_argument('--codes', type=str, nargs='+', help='指定需要更新的股票代码列表 (例如: sh.600000 sz.000001)，仅对 stock 和 finance 任务有效')
+    # -------------------------------
+
     args = parser.parse_args()
     
     start_time = time.time()
     
     # 任务调度逻辑
     if args.task == 'all':
-        run_index_update(args.mode) # 先跑指数，速度快
+        # 注意: task=all 时忽略 codes 参数，因为其他任务(ETF/Concept)不适用股票代码
+        run_index_update(args.mode)
         run_stock_update(args.mode)
         run_etf_update(args.mode)
         run_finance_update(args.mode)
@@ -287,13 +293,15 @@ if __name__ == "__main__":
         run_index_update(args.mode)
 
     elif args.task == 'stock':
-        run_stock_update(args.mode)
+        # 传递指定代码
+        run_stock_update(args.mode, specific_codes=args.codes)
         
     elif args.task == 'etf':
         run_etf_update(args.mode)
         
     elif args.task == 'finance':
-        run_finance_update(args.mode)
+        # 传递指定代码
+        run_finance_update(args.mode, specific_codes=args.codes)
         
     elif args.task == 'concept':
         run_concept_update(args.mode)

@@ -9,6 +9,8 @@ import akshare as ak
 import pandas as pd
 import sys
 from pathlib import Path
+import time # 引入time
+from json import JSONDecodeError # 引入具体的错误类型
 
 # 🚑 路径补丁
 project_root = str(Path(__file__).resolve().parents[2])
@@ -25,28 +27,37 @@ class AkshareFetcher:
     def fetch_financial_report(self, code: str) -> pd.DataFrame:
         """
         获取个股财务摘要 (全量数据)
-        接口: stock_financial_abstract
-        返回格式: 原始透视表 (行:指标, 列:日期)
+        增加: 重试机制与详细的错误捕获
         """
         code_str = self._format_code(code)
         
-        try:
-            # 新接口: 返回的数据是 透视表结构
-            df = ak.stock_financial_abstract(symbol=code_str)
+        # 简单的重试机制
+        max_retries = 3
+        for i in range(max_retries):
+            try:
+                df = ak.stock_financial_abstract(symbol=code_str)
+                
+                if df is None or df.empty:
+                    return pd.DataFrame()
+
+                # 手动注入 code
+                df['code'] = code 
+                return df
             
-            if df is None or df.empty:
+            except JSONDecodeError:
+                # 这是最关键的捕获：说明被反爬了
+                print(f"⚠️ [Anti-Scraping] JSON Error for {code}. Retrying ({i+1}/{max_retries})...")
+                time.sleep(600) # 遇到封锁，多睡一会
+                continue
+                
+            except Exception as e:
+                # 其他网络错误
+                # print(f"⚠️ Error fetching {code}: {e}")
                 return pd.DataFrame()
-
-            # 手动注入 code，方便后续处理
-            # 注意：因为现在返回的是宽表，我们把 code 作为一个属性附加，或者在 cleaner 里处理
-            # 这里我们选择不直接修改 df 结构，而是返回原始 df，
-            # 但为了传递 code，我们可以临时加一列，cleaner 转置时会处理它
-            df['code'] = code 
-
-            return df
-            
-        except Exception:
-            return pd.DataFrame()
+        
+        # 重试多次后依然失败
+        print(f"❌ Failed to fetch {code} after retries.")
+        return pd.DataFrame()
 
     # =================================================
     # 2. 💡 概念板块数据
