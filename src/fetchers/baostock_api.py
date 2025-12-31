@@ -118,17 +118,68 @@ class BaostockFetcher:
         df = pd.DataFrame(data_list, columns=rs.fields)
         return self._convert_types(df)
 
-    def _convert_types(self, df: pd.DataFrame) -> pd.DataFrame:
-        float_cols = [
-            'open', 'high', 'low', 'close', 'preclose', 
-            'volume', 'amount', 'turn', 'pctChg', 
-            'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM'
+    def fetch_profit_data_history(self, code: str, start_year: int = 2010, end_year: int = None) -> pd.DataFrame:
+        """
+        获取个股历史盈利能力数据 (含pubDate, totalShare等)
+        :param code: e.g. "sh.600000"
+        :param start_year: 开始年份
+        :param end_year: 结束年份 (默认当年)
+        """
+        if end_year is None:
+            end_year = datetime.datetime.now().year
+
+        data_list = []
+        
+        # 遍历年份和季度
+        # 注意: 这里的循环会导致网络请求较多，update模式下建议缩短年份范围
+        for year in range(start_year, end_year + 1):
+            for quarter in [1, 2, 3, 4]:
+                try:
+                    rs = bs.query_profit_data(code=code, year=year, quarter=quarter)
+                    if rs.error_code == '0':
+                        while rs.next():
+                            data_list.append(rs.get_row_data())
+                except Exception:
+                    continue
+        
+        if not data_list:
+            return pd.DataFrame()
+
+        # Baostock返回的原始字段
+        # code, pubDate, statDate, roeAvg, npMargin, gpMargin, netProfit, epsTTM, MBRevenue, totalShare, liqaShare
+        # 我们暂时不在这里重命名，留给Cleaner处理
+        columns = [
+            "code", "pubDate", "statDate", "roeAvg", "npMargin", "gpMargin", 
+            "netProfit", "epsTTM", "MBRevenue", "totalShare", "liqaShare"
         ]
+        
+        # 如果返回列数不对，重新获取fields (通常上面硬编码的列名是固定的)
+        if data_list and len(data_list[0]) == len(columns):
+            df = pd.DataFrame(data_list, columns=columns)
+        else:
+            # Fallback (极少发生)
+            df = pd.DataFrame(data_list)
+
+        return self._convert_types(df)
+
+    def _convert_types(self, df: pd.DataFrame) -> pd.DataFrame:
+        """重写或扩展类型转换，增加对新字段的处理"""
+        # 定义浮点列
+        float_cols = [
+            'open', 'high', 'low', 'close', 'preclose', 'volume', 'amount', 
+            'turn', 'pctChg', 'peTTM', 'pbMRQ', 'psTTM', 'pcfNcfTTM',
+            # 新增的财务字段
+            'roeAvg', 'npMargin', 'gpMargin', 'netProfit', 'epsTTM', 
+            'MBRevenue', 'totalShare', 'liqaShare'
+        ]
+        
         for col in df.columns:
             if col in float_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
+                
         if 'isST' in df.columns:
              df['isST'] = pd.to_numeric(df['isST'], errors='coerce').fillna(0).astype(int)
+             
         return df
 
 if __name__ == "__main__":

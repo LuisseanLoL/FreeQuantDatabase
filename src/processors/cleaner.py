@@ -120,6 +120,66 @@ class DataCleaner:
                 # df_T.rename(columns={col: new_col}, inplace=True)
 
         return df_T
+    
+    @staticmethod
+    def clean_baostock_profit(df: pd.DataFrame) -> pd.DataFrame:
+        """清洗 Baostock 盈利能力数据"""
+        if df.empty: return df
+        
+        # 1. 重命名列以匹配系统标准
+        # statDate -> report_date (对齐 Akshare)
+        # pubDate -> publish_date
+        rename_map = {
+            'statDate': 'report_date',
+            'pubDate': 'publish_date',
+            'totalShare': 'total_share',
+            'liqaShare': 'circulating_share' # 流通股
+        }
+        df = df.rename(columns=rename_map)
+        
+        # 2. 清洗日期
+        df = DataCleaner.normalize_date(df, 'report_date')
+        df = DataCleaner.normalize_date(df, 'publish_date')
+        
+        # 3. 筛选需要的列 (避免和 Akshare 的 netProfit 冲突，只取补充列)
+        # 当然，如果你想保留 Baostock 的指标也可以，这里优先保留补充信息
+        keep_cols = ['code', 'report_date', 'publish_date', 'total_share', 'circulating_share']
+        
+        # 确保列存在
+        final_cols = [c for c in keep_cols if c in df.columns]
+        return df[final_cols]
+
+    @staticmethod
+    def merge_financial_data(df_ak: pd.DataFrame, df_bs: pd.DataFrame) -> pd.DataFrame:
+        """
+        合并 Akshare (主) 和 Baostock (辅) 的财务数据
+        Key: code, report_date
+        """
+        if df_ak.empty: return df_bs
+        if df_bs.empty: return df_ak
+        
+        # 确保关键列类型一致
+        for df in [df_ak, df_bs]:
+            if 'report_date' in df.columns:
+                df['report_date'] = pd.to_datetime(df['report_date']).dt.date
+            if 'code' in df.columns:
+                df['code'] = df['code'].astype(str)
+
+        # Merge
+        # 使用 left join，以 Akshare 为主（因为 Akshare 包含所有历史，而 Baostock 可能只抓了近几年的）
+        # on=['code', 'report_date']
+        try:
+            merged_df = pd.merge(
+                df_ak, 
+                df_bs, 
+                on=['code', 'report_date'], 
+                how='left', 
+                suffixes=('', '_bs') # 如果有重名列，Baostock的加后缀
+            )
+            return merged_df
+        except Exception as e:
+            print(f"⚠️ Merge failed: {e}")
+            return df_ak
 
     @staticmethod
     def clean_news_data(df: pd.DataFrame) -> pd.DataFrame:

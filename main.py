@@ -152,22 +152,76 @@ def run_finance_update(mode: str, specific_codes: Optional[List[str]] = None):
     cleaner = DataCleaner()
     ak_fetcher = AkshareFetcher()
     
-    # 财务数据同样需要确定股票范围
+    # 确定 Baostock 的抓取年份范围
+    current_year = datetime.date.today().year
+    if mode == 'full':
+        bs_start_year = 2007 # Baostock 该接口最早提供 2007 年数据
+    else:
+        bs_start_year = current_year - 1 # update模式只更新近两年，加快速度
+
+    # 获取股票列表
     with BaostockFetcher() as bs:
         stock_codes = load_stock_scope(bs, mode, specific_codes)
-        
+    
     logger.info(f"Updating Financial Reports for {len(stock_codes)} stocks...")
-    for code in tqdm(stock_codes, desc="Finance"):
-        try:
-            df = ak_fetcher.fetch_financial_report(code)
-            if not df.empty:
-                df = cleaner.clean_financial_report(df)
-                storage.save_partitioned(df, "stock_financial", partition_col="report_date", key_col='code')
-            
-            time.sleep(random.uniform(1.5, 3.5)) 
-            
-        except Exception:
-            pass
+    
+    # 我们需要在循环里同时使用 BaostockFetcher，所以这里使用 with
+    with BaostockFetcher() as bs_fetcher:
+        
+        for code in tqdm(stock_codes, desc="Finance"):
+            try:
+                # 1. 获取 Akshare 数据 (全量历史)
+                df_ak = ak_fetcher.fetch_financial_report(code)
+                if df_ak.empty:
+                    continue
+                df_ak = cleaner.clean_financial_report(df_ak)
+
+                # 2. 获取 Baostock 数据 (补充 publish_date, totalShare 等)
+                # 注意: Baostock 代码需要 "sh." 前缀，而 Akshare 清洗后可能去掉了
+                # 我们假设 load_stock_scope 返回的是带前缀的标准代码 (sh.600000)
+                df_bs = bs_fetcher.fetch_profit_data_history(
+                    code, 
+                    start_year=bs_start_year, 
+                    end_year=current_year
+                )
+                df_bs = cleaner.clean_baostock_profit(df_bs)
+
+                # 3. 合并数据
+                # 此时 df_ak 中的 code 可能是 "600000" (如果被 cleaner 格式化了)
+                # df_bs 中的 code 是 "sh.600000"
+                # 需要确保 merge 时 code 一致。
+                # 建议在 merge 前把 df_bs 的 code 去前缀，或者 df_ak 加前缀。
+                # 这里简单处理：cleaner.clean_baostock_profit 里并没有去前缀，
+                # 我们统一在 merge 逻辑里，或者这里手动对齐：
+                
+                # 统一转为纯数字代码进行合并
+                if not df_bs.empty:
+                    df_bs['code'] = df_bs['code'].apply(lambda x: x.split('.')[-1] if '.' in x else x)
+                if not df_ak.empty:
+                    df_ak['code'] = df_ak['code'].apply(lambda x: x.split('.')[-1] if '.' in x else x)
+
+                df_final = cleaner.merge_financial_data(df_ak, df_bs)
+
+                # 4. 存储
+                # 恢复带前缀的代码用于文件名 (sh.600000.parquet) - 可选，或者存储时保持纯数字
+                # 这里的 key_col='code' 会使用 DataFrame 中的 code 列的值做文件名
+                # 如果你想文件名为 sh.600000，需要确保 df_final['code'] 是 sh.600000
+                # 为了保持统一，建议这里把 code 还原回原始传入的 code (带前缀)
+                df_final['code'] = code 
+
+                storage.save_partitioned(
+                    df_final, 
+                    "stock_financial", 
+                    partition_col="report_date", 
+                    key_col='code'
+                )
+                
+                # 随机休眠 (Akshare 限制)
+                time.sleep(random.uniform(1.0, 2.0))
+                
+            except Exception as e:
+                # logger.error(f"Error {code}: {e}")
+                pass
 
 # ==========================================
 # 5. 💡 概念板块 (Concept)
