@@ -58,6 +58,24 @@ class AkshareFetcher:
         # 重试多次后依然失败
         print(f"❌ Failed to fetch {code} after retries.")
         return pd.DataFrame()
+    
+    def fetch_dividend_detail(self, code: str) -> pd.DataFrame:
+        """
+        获取个股分红详情 (同花顺)
+        接口: stock_fhps_detail_ths
+        包含: 股利支付率, 税前分红率, 除权除息日等
+        """
+        code_str = self._format_code(code)
+        try:
+            df = ak.stock_fhps_detail_ths(symbol=code_str)
+            if df is None or df.empty:
+                return pd.DataFrame()
+            
+            # 手动注入 code
+            df['code'] = code
+            return df
+        except Exception:
+            return pd.DataFrame()
 
     # =================================================
     # 2. 💡 概念板块数据

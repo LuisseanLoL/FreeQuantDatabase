@@ -187,3 +187,99 @@ class DataCleaner:
         if 'date' in df.columns:
             df['date'] = pd.to_datetime(df['date'], format='%Y%m%d', errors='coerce').dt.date
         return df
+    
+    @staticmethod
+    def _parse_ths_report_period(text: str):
+        """
+        内部工具: 解析同花顺的中文报告期
+        2022年报 -> 2022-12-31
+        2022中报 -> 2022-06-30
+        2022一季报 -> 2022-03-31
+        2022三季报 -> 2022-09-30
+        """
+        if not isinstance(text, str): return pd.NaT
+        
+        # 提取年份 (前4位)
+        try:
+            year = int(text[:4])
+        except:
+            return pd.NaT
+            
+        if "年报" in text:
+            return pd.Timestamp(year=year, month=12, day=31).date()
+        elif "中报" in text:
+            return pd.Timestamp(year=year, month=6, day=30).date()
+        elif "一季" in text: # 一季报
+            return pd.Timestamp(year=year, month=3, day=31).date()
+        elif "三季" in text: # 三季报
+            return pd.Timestamp(year=year, month=9, day=30).date()
+        else:
+            return pd.NaT
+
+    @staticmethod
+    def clean_dividend_data(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        清洗分红数据
+        """
+        if df.empty: return df
+        
+        # 1. 映射字段名
+        # 报告期 -> report_date (用于对齐)
+        # 税前分红率 -> dividend_yield
+        # 股利支付率 -> dividend_payout_ratio
+        # A股除权除息日 -> ex_dividend_date
+        rename_map = {
+            "报告期": "report_period_str", # 保留原始列备查
+            "税前分红率": "dividend_yield",
+            "股利支付率": "dividend_payout_ratio",
+            "A股除权除息日": "ex_dividend_date",
+            "分红总额": "total_dividend"
+        }
+        df = df.rename(columns=rename_map)
+        
+        # 2. 处理报告期 (转为标准 date)
+        if "report_period_str" in df.columns:
+            df['report_date'] = df['report_period_str'].apply(DataCleaner._parse_ths_report_period)
+            # 过滤解析失败的行
+            df = df.dropna(subset=['report_date'])
+        
+        # 3. 处理百分比和单位
+        def clean_pct(val):
+            """ 1.52% -> 0.0152, -- -> NaN """
+            if pd.isna(val): return np.nan
+            s = str(val).strip()
+            if '%' in s:
+                try:
+                    return float(s.replace('%', '')) / 100.0
+                except: return np.nan
+            return np.nan
+
+        def clean_amount(val):
+            """ 2.94亿 -> 2.94e8 """
+            if pd.isna(val): return np.nan
+            s = str(val).strip()
+            if '亿' in s:
+                try:
+                    return float(s.replace('亿', '')) * 1e8
+                except: return np.nan
+            if '万' in s:
+                try:
+                    return float(s.replace('万', '')) * 1e4
+                except: return np.nan
+            return np.nan
+
+        if 'dividend_yield' in df.columns:
+            df['dividend_yield'] = df['dividend_yield'].apply(clean_pct)
+            
+        if 'dividend_payout_ratio' in df.columns:
+            df['dividend_payout_ratio'] = df['dividend_payout_ratio'].apply(clean_pct)
+            
+        if 'total_dividend' in df.columns:
+            df['total_dividend'] = df['total_dividend'].apply(clean_amount)
+            
+        if 'ex_dividend_date' in df.columns:
+            df['ex_dividend_date'] = pd.to_datetime(df['ex_dividend_date'], errors='coerce').dt.date
+
+        # 4. 筛选保留字段
+        keep_cols = ['code', 'report_date', 'dividend_yield', 'dividend_payout_ratio', 'total_dividend', 'ex_dividend_date']
+        return df[[c for c in keep_cols if c in df.columns]]
